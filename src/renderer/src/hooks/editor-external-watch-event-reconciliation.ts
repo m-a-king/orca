@@ -29,9 +29,11 @@ import {
   scheduleSelfWriteAwareEditorExternalReload,
   type EditorExternalWatchNotification
 } from './editor-external-watch-disk-verification'
+import { WATCH_BATCH_INTERVAL_MS } from '../../../shared/filesystem-watch-batch-window'
 
 // Why: macOS atomic writes split delete→create across payloads; debounce deletion so a same-path create cancels the tombstone before it paints.
-const EXTERNAL_MUTATION_DEBOUNCE_MS = 75
+// Under sustained writes the halves land one batch interval apart plus stat jitter (WSL/9P, AV scans), so allow two intervals.
+export const EXTERNAL_MUTATION_DEBOUNCE_MS = WATCH_BATCH_INTERVAL_MS * 2 + 50
 
 type PendingDeleteTimer = {
   fileId: string
@@ -164,6 +166,11 @@ export function buildEditorExternalWatchEventHandler(
 
     for (const change of batchPaths.changes) {
       const matching = batchPaths.matchingOpenFiles(change)
+      // Why: most watched paths match no open file, and the notification below is only ever read
+      // past this point — building it first allocates (and dictionary-modes) it for nothing.
+      if (matching.length === 0 && !batchPaths.hasCombinedDiffConsumer) {
+        continue
+      }
       const notification: EditorExternalWatchNotification = {
         worktreeId: target.worktreeId,
         worktreePath: target.worktreePath,
@@ -177,9 +184,7 @@ export function buildEditorExternalWatchEventHandler(
         }
       })
       if (matching.length === 0) {
-        if (batchPaths.hasCombinedDiffConsumer) {
-          scheduleDebouncedEditorExternalReload(notification)
-        }
+        scheduleDebouncedEditorExternalReload(notification)
         continue
       }
       const dirtyMatches = matching.filter((file) => file.isDirty)

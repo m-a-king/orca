@@ -1,3 +1,4 @@
+import type { WorkspaceAttachmentMutation } from '../../../shared/workspace-attachment-mutation'
 import { randomUUID } from 'node:crypto'
 import type { WorktreeMeta } from '../../../shared/worktree/meta-types'
 import type { ExecutionHostId } from '../../../shared/execution-host'
@@ -14,9 +15,20 @@ import { scheduleSave } from './write-scheduling'
 import { mergeWorktreeMetaForWrite } from './worktree-meta-write-normalization'
 
 type MetadataRuntime = Pick<StoreRuntimeState, 'state'>
+type WorktreeMetaState = Pick<
+  PersistedState,
+  'worktreeMeta' | 'worktreeMetaByIdentity' | 'worktreeIdentityAliases'
+>
+
+/** Storage rows changed together by host-qualified metadata writes. */
+export const WORKTREE_METADATA_DOMAINS = [
+  'worktreeMeta',
+  'worktreeMetaByIdentity',
+  'worktreeIdentityAliases'
+] as const
 
 /** Select one readable row without discarding competing alias candidates. */
-function resolveAliasIdentityKey(state: PersistedState, alias: string): string | undefined {
+function resolveAliasIdentityKey(state: WorktreeMetaState, alias: string): string | undefined {
   const identityKeys = state.worktreeIdentityAliases?.[alias] ?? []
   if (identityKeys.length === 0) {
     return undefined
@@ -36,11 +48,18 @@ function resolveAliasIdentityKey(state: PersistedState, alias: string): string |
 }
 
 /** Drop identity metadata no alias points at any more. */
-export function pruneUnreferencedWorktreeIdentityMeta(state: PersistedState): boolean {
+export function pruneUnreferencedWorktreeIdentityMeta(
+  state: PersistedState,
+  candidates?: ReadonlySet<string>
+): boolean {
   const referenced = new Set(Object.values(state.worktreeIdentityAliases ?? {}).flat())
   let changed = false
-  for (const identityKey of Object.keys(state.worktreeMetaByIdentity ?? {})) {
-    if (!referenced.has(identityKey)) {
+  const identityKeys = candidates ?? Object.keys(state.worktreeMetaByIdentity ?? {})
+  for (const identityKey of identityKeys) {
+    if (
+      Object.hasOwn(state.worktreeMetaByIdentity ?? {}, identityKey) &&
+      !referenced.has(identityKey)
+    ) {
       delete state.worktreeMetaByIdentity?.[identityKey]
       changed = true
     }
@@ -154,7 +173,7 @@ export function getWorktreeMetaForHost(
   const alias = composeWorktreeHostIdentity(executionHostId, worktreeId)
   const identityKey = resolveAliasIdentityKey(state, alias)
   if (changed) {
-    scheduleSave(scheduling)
+    scheduleSave(scheduling, WORKTREE_METADATA_DOMAINS)
   }
   if (identityKey) {
     return state.worktreeMetaByIdentity?.[identityKey]
@@ -165,7 +184,7 @@ export function getWorktreeMetaForHost(
 
 /** Read-only host projection used by listings that must include canonical-only rows. */
 export function getAllWorktreeMetaForHost(
-  runtime: MetadataRuntime,
+  runtime: { state: WorktreeMetaState },
   executionHostId: ExecutionHostId
 ): Record<string, WorktreeMeta> {
   const state = runtime.state
@@ -196,7 +215,7 @@ export function setWorktreeMetaForHost(
   scheduling: WriteSchedulingOperations,
   worktreeId: string,
   executionHostId: ExecutionHostId,
-  meta: Partial<WorktreeMeta>
+  meta: Partial<WorktreeMeta> & WorkspaceAttachmentMutation
 ): WorktreeMeta {
   const state = runtime.state
   migrateLegacyWorktreeMetadata(state, worktreeId, executionHostId)
@@ -231,6 +250,6 @@ export function setWorktreeMetaForHost(
   if (!legacy || legacy.hostId === executionHostId) {
     state.worktreeMeta[worktreeId] = updated
   }
-  scheduleSave(scheduling)
+  scheduleSave(scheduling, WORKTREE_METADATA_DOMAINS)
   return updated
 }

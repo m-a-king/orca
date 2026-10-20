@@ -20,12 +20,14 @@ function sendOrigin(
   const normalizedText = normalizeReconcileText(text)
   return {
     draftKey: 'host\0worktree\0tab',
+    draftEditGeneration: 0,
     pendingKey: 'host\0worktree\0tab\0session',
     normalizedText,
     // Use production's counter so the test cannot mirror its normalization drift.
     baselineOccurrences: countUserTextOccurrences(messages, normalizedText),
     baselineTailMessageId: messages.at(-1)?.id ?? null,
-    baselineResolved: true
+    baselineResolved: true,
+    sentAt: Date.now()
   }
 }
 

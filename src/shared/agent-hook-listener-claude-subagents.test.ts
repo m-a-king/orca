@@ -11,7 +11,6 @@ import {
 } from './agent-hook-listener/listener-state'
 import { normalizeHookPayload } from './agent-hook-listener'
 import { clearGrokSessionPathLookupCacheForTests } from './grok-session-paths'
-import { AGENT_STATUS_MAX_SUBAGENTS } from './agent-status-types'
 import { makePaneKey } from './stable-pane-id'
 import { PANE_KEY } from './agent-hook-listener-test-harness'
 
@@ -509,7 +508,7 @@ describe('shared agent-hook-listener', () => {
       ])
     })
 
-    it('keeps a live child omitted by the background task snapshot cap', () => {
+    it('keeps a live child omitted by an inventory with an unreadable entry', () => {
       claudeEvent({
         hook_event_name: 'SubagentStart',
         agent_id: 'alive-after-cap',
@@ -517,15 +516,14 @@ describe('shared agent-hook-listener', () => {
       })
       const stop = claudeEvent({
         hook_event_name: 'Stop',
-        background_tasks: Array.from({ length: AGENT_STATUS_MAX_SUBAGENTS + 1 }, (_, index) => ({
-          id: index === AGENT_STATUS_MAX_SUBAGENTS ? 'alive-after-cap' : `a${index}`,
-          type: 'subagent',
-          status: 'running'
-        }))
+        background_tasks: [
+          { id: 'a0', type: 'subagent', status: 'running' },
+          { id: 'unreadable', status: 'running' }
+        ]
       })
 
-      // Why: the inventory was capped before this id, so omission cannot
-      // prove the lifecycle-tracked child finished or was killed.
+      // Why: an unreadable entry may be this id, so omission cannot prove
+      // the lifecycle-tracked child finished or was killed.
       expect(stop?.payload.subagents).toContainEqual(
         expect.objectContaining({ id: 'alive-after-cap', state: 'working' })
       )
@@ -663,7 +661,10 @@ describe('shared agent-hook-listener', () => {
       expect(wait?.payload.state).toBe('waiting')
       expect(wait?.payload.interactivePrompt).toBeDefined()
 
-      expect(clearClaudeAnsweredQuestionWait(state, PANE_KEY)).toEqual({ state: 'working' })
+      expect(clearClaudeAnsweredQuestionWait(state, PANE_KEY)).toEqual({
+        state: 'working',
+        mainAgent: { state: 'working', stateStartedAt: expect.any(Number) }
+      })
 
       // Why: a child-driven refresh re-emits the cached lead state; the linger
       // bug would come back if it could resurrect the dismissed question.
@@ -675,6 +676,27 @@ describe('shared agent-hook-listener', () => {
       expect(childDriven?.payload.state).toBe('working')
       expect(childDriven?.payload.toolName).toBeUndefined()
       expect(childDriven?.payload.interactivePrompt).toBeUndefined()
+    })
+
+    it('preserves tool-output provenance when restoring the lead preview after an answer', () => {
+      claudeEvent({ hook_event_name: 'UserPromptSubmit', prompt: 'inspect and ask' })
+      claudeEvent({
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_response: { content: [{ type: 'text', text: 'raw command output' }] }
+      })
+      claudeEvent({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'AskUserQuestion',
+        tool_input: { questions: [{ question: 'Continue?' }] }
+      })
+
+      clearClaudeAnsweredQuestionWait(state, PANE_KEY)
+
+      expect(state.lastToolByPaneKey.get(PANE_KEY)).toMatchObject({
+        lastAssistantMessage: 'raw command output',
+        lastAssistantMessageIsToolOutput: true
+      })
     })
 
     it('restores the stashed lead state for an answered child question', () => {
@@ -693,10 +715,13 @@ describe('shared agent-hook-listener', () => {
       // emitted state is gated up to working only while that child still runs.
       expect(clearClaudeAnsweredQuestionWait(state, PANE_KEY)).toEqual({
         state: 'working',
-        turnCompletedAt: expect.any(Number)
+        turnCompletedAt: expect.any(Number),
+        // The main agent's own fact rides beside the gated state: it finished, no verdict was given.
+        mainAgent: { state: 'done', stateStartedAt: expect.any(Number) }
       })
       expect(state.claudeLeadStateByPaneKey.get(PANE_KEY)).toEqual({
         state: 'done',
+        stateStartedAt: expect.any(Number),
         turnCompletedAt: expect.any(Number)
       })
 
@@ -705,7 +730,10 @@ describe('shared agent-hook-listener', () => {
     })
 
     it('falls back to working when no lead record exists', () => {
-      expect(clearClaudeAnsweredQuestionWait(state, PANE_KEY)).toEqual({ state: 'working' })
+      expect(clearClaudeAnsweredQuestionWait(state, PANE_KEY)).toEqual({
+        state: 'working',
+        mainAgent: { state: 'working', stateStartedAt: expect.any(Number) }
+      })
     })
   })
 })

@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import type { MutableRefObject, RefObject } from 'react'
 import { Copy, Image } from 'lucide-react'
 import {
@@ -35,18 +36,22 @@ export function BrowserGuestAnnotateOverlays({
   annotationSend,
   grabAnnotations,
   containerRef,
+  markupPortalContainer,
   webviewRef,
   browserOverlayViewport,
-  worktreeId
+  worktreeId,
+  currentUrl
 }: {
   markup: MarkupModeController
   grab: GrabModeHook
   annotationSend: ReturnType<typeof useBrowserPageAnnotationSend>
   grabAnnotations: ReturnType<typeof useBrowserPageGrabAnnotations>
   containerRef: RefObject<HTMLDivElement | null>
+  markupPortalContainer?: HTMLDivElement | null
   webviewRef: MutableRefObject<Electron.WebviewTag | null>
   browserOverlayViewport: BrowserOverlayViewport
   worktreeId: string
+  currentUrl?: string
 }): React.JSX.Element {
   const {
     pendingAnnotationPayload,
@@ -61,57 +66,68 @@ export function BrowserGuestAnnotateOverlays({
     dismissGrabToast,
     setGrabToast
   } = grabAnnotations
+  const markupTarget = markupPortalContainer ?? containerRef.current
   const {
     browserAnnotations,
-    browserAnnotationTrayOpen,
     annotationTraySendOpen,
     handleAnnotationTraySendOpenChange,
     activeGroupId,
     browserAnnotationsPrompt,
     handleBrowserAnnotationsSentToAgent,
+    handleBrowserAnnotationsHandedOff,
     handleCopyBrowserAnnotations,
     browserAnnotationsCopied,
     handleClearBrowserAnnotations,
-    handleDeleteBrowserAnnotation
+    handleDeleteBrowserAnnotation,
+    handleUpdateBrowserAnnotation
   } = annotationSend
 
   return (
     <>
-      {markup.isActive && markup.baseImage ? (
-        <MarkupOverlay
-          baseImage={markup.baseImage}
-          busy={markup.state === 'composing'}
-          onComplete={(input) => void markup.complete(input)}
-          onCancel={markup.cancel}
-        />
-      ) : null}
+      {markup.isActive && markup.baseImage && markupTarget
+        ? createPortal(
+            <MarkupOverlay
+              baseImage={markup.baseImage}
+              busy={markup.state === 'composing'}
+              onComplete={(input) => void markup.complete(input)}
+              onCancel={markup.cancel}
+            />,
+            markupTarget
+          )
+        : null}
       {pendingAnnotationPayload ? (
         <PendingBrowserAnnotationCard
           payload={pendingAnnotationPayload}
-          anchor={getBrowserOverlayAnchor(
-            pendingAnnotationPayload,
-            containerRef.current,
-            webviewRef.current,
-            browserOverlayViewport
-          )}
+          resolveAnchor={(cardHeight) =>
+            getBrowserOverlayAnchor(
+              pendingAnnotationPayload,
+              containerRef.current,
+              webviewRef.current,
+              browserOverlayViewport,
+              cardHeight
+            )
+          }
           portalContainer={containerRef.current}
           onAdd={handleAddBrowserAnnotation}
           onCancel={handleCancelPendingBrowserAnnotation}
         />
       ) : null}
-      {browserAnnotations.length > 0 && browserAnnotationTrayOpen ? (
+      {browserAnnotations.length > 0 ? (
         <BrowserPageAnnotationTray
           browserAnnotations={browserAnnotations}
+          currentUrl={currentUrl}
           annotationTraySendOpen={annotationTraySendOpen}
           handleAnnotationTraySendOpenChange={handleAnnotationTraySendOpenChange}
           worktreeId={worktreeId}
           activeGroupId={activeGroupId}
           browserAnnotationsPrompt={browserAnnotationsPrompt}
           handleBrowserAnnotationsSentToAgent={handleBrowserAnnotationsSentToAgent}
+          handleBrowserAnnotationsHandedOff={handleBrowserAnnotationsHandedOff}
           handleCopyBrowserAnnotations={handleCopyBrowserAnnotations}
           browserAnnotationsCopied={browserAnnotationsCopied}
           handleClearBrowserAnnotations={handleClearBrowserAnnotations}
           handleDeleteBrowserAnnotation={handleDeleteBrowserAnnotation}
+          handleUpdateBrowserAnnotation={handleUpdateBrowserAnnotation}
         />
       ) : null}
       {/* Right-click context dropdown, positioned at the grabbed element's center. */}

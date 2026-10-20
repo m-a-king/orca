@@ -297,10 +297,10 @@ describe('web worktree preload API', () => {
     let resolveServerA: ((response: RuntimeRpcResponse<unknown>) => void) | undefined
     vi.doMock('./web-runtime-client', () => ({
       WebRuntimeClient: class {
-        constructor(private readonly offer: { publicKeyB64: string }) {}
+        constructor(private readonly connection: { hostPublicKeyB64: string }) {}
 
         call(): Promise<RuntimeRpcResponse<unknown>> {
-          if (this.offer.publicKeyB64 === 'public-key') {
+          if (this.connection.hostPublicKeyB64 === 'public-key') {
             return new Promise((resolve) => {
               resolveServerA = resolve
             })
@@ -596,6 +596,8 @@ describe('web worktree preload API', () => {
       compareBaseRef: 'refs/remotes/origin/main',
       setupDecision: 'inherit',
       createdWithAgent: 'codex',
+      displayName: 'Review label',
+      displayNameKind: 'user',
       startup: {
         command: "codex 'summarize repo'",
         env: { ORCA_AGENT_MODE: 'direct' },
@@ -636,6 +638,8 @@ describe('web worktree preload API', () => {
           baseBranch: TEST_COMMIT_OID,
           compareBaseRef: 'refs/remotes/origin/main',
           createdWithAgent: 'codex',
+          displayName: 'Review label',
+          displayNameKind: 'user',
           startupCommand: "codex 'summarize repo'",
           startupEnv: { ORCA_AGENT_MODE: 'direct' },
           startupLaunchConfig: {

@@ -1,3 +1,5 @@
+import { getDeepSeekBuildTitleStatus } from './dsb-terminal-title'
+import { qoderTitleStatus } from './qoder-terminal-title'
 import {
   AGY_AGENT_NAME_RE,
   BRAILLE_SPINNER_RE,
@@ -19,6 +21,7 @@ import {
   containsQuarterCircleSpinner,
   containsLegacyAgentName,
   isClaudeManagementTitle,
+  isDshTerminalTitle,
   isGeminiTerminalTitle,
   isPiAgentTitle,
   isPiTerminalTitle
@@ -29,13 +32,22 @@ import {
   getPiCompatibleTitleSeparatorStatus,
   getPiCompatibleSyntheticAgentStatus
 } from './pi-compatible-synthetic-title'
+import { clearPiStateWorkingMarker, getPiStateTitleStatus } from './pi-state-title-marker'
 import { getWrapperTitleSegments } from './terminal-title-wrapper-segments'
 import { isGrokRotatingWorkingTitle } from './terminal-title-agent-type'
+import { memoizeTitleClassification } from './terminal-title-classification-memo'
 
 /**
  * Strip working-status indicators so stale exit titles stop reporting working.
  */
 export function clearWorkingIndicators(title: string): string {
+  // Why: Pi/OMP's static working marker survives every strip below, so a stale native
+  // title would keep re-arming the 3s clear timer without ever leaving working (#13890).
+  const clearedPiStateMarker = clearPiStateWorkingMarker(title)
+  if (clearedPiStateMarker) {
+    return clearedPiStateMarker
+  }
+
   let cleaned = title
 
   cleaned = cleaned.replace(GEMINI_WORKING, '')
@@ -53,18 +65,25 @@ export function clearWorkingIndicators(title: string): string {
   return cleaned || title
 }
 
+/** Where a working agent settled: at rest, or on a prompt that needs the user. */
+export type AgentIdleStatus = Exclude<AgentStatus, 'working'>
+
 /**
- * Tracks agent status transitions from terminal title changes.
+ * Tracks agent status transitions. The program's own OSC 7501 activity, while it reports one,
+ * outranks title glyphs; titles classify only programs that report nothing explicit.
  */
 export function createAgentStatusTracker(
-  onBecameIdle: (title: string) => void,
+  onBecameIdle: (title: string, status: AgentIdleStatus) => void,
   onBecameWorking?: () => void,
   onAgentExited?: () => void,
   initialTitle?: string
 ): {
   handleTitle: (title: string) => void
+  handleProgramActivity: (activity: AgentStatus | null) => void
+  /** Adopt replayed activity without edges, as replayed titles move no status. */
+  seedProgramActivity: (activity: AgentStatus | null) => void
   seedTitle: (title: string) => void
-  restoreLastExit: () => AgentStatus | null
+  restoreLastExit: (confirmedStatus?: AgentStatus) => AgentStatus | null
   reset: () => void
 } {
   // Why: trackers restored mid-session need a last-known status without firing
@@ -72,36 +91,58 @@ export function createAgentStatusTracker(
   let lastStatus: AgentStatus | null =
     initialTitle !== undefined ? detectAgentStatusFromTitle(initialTitle) : null
   let restorableExitStatus: AgentStatus | null = null
+  let programActivity: AgentStatus | null = null
+  let lastTitle = initialTitle ?? ''
+
+  function transition(newStatus: AgentStatus | null, title: string): void {
+    if (newStatus !== null) {
+      restorableExitStatus = null
+    }
+    if (lastStatus === 'working' && newStatus !== null && newStatus !== 'working') {
+      onBecameIdle(title, newStatus)
+    }
+    if (lastStatus !== 'working' && newStatus === 'working') {
+      onBecameWorking?.()
+    }
+    // Why: reverting to a plain shell prompt after idle/permission means the
+    // agent exited; while working it can just be a transient internal title.
+    if (lastStatus !== null && lastStatus !== 'working' && newStatus === null) {
+      restorableExitStatus = lastStatus
+      lastStatus = null
+      onAgentExited?.()
+    }
+    if (newStatus !== null) {
+      lastStatus = newStatus
+    }
+  }
 
   return {
     handleTitle(title: string): void {
-      const newStatus = detectAgentStatusFromTitle(title)
-      if (newStatus !== null) {
+      lastTitle = title
+      transition(programActivity ?? detectAgentStatusFromTitle(title), title)
+    },
+    handleProgramActivity(activity: AgentStatus | null): void {
+      programActivity = activity
+      // Why no transition on null: the program stopped reporting, so the next title decides.
+      if (activity !== null) {
+        transition(activity, lastTitle)
+      }
+    },
+    seedProgramActivity(activity: AgentStatus | null): void {
+      programActivity = activity
+      // The restored state is the baseline later live edges compare against.
+      if (activity !== null) {
+        lastStatus = activity
         restorableExitStatus = null
-      }
-      if (lastStatus === 'working' && newStatus !== null && newStatus !== 'working') {
-        onBecameIdle(title)
-      }
-      if (lastStatus !== 'working' && newStatus === 'working') {
-        onBecameWorking?.()
-      }
-      // Why: reverting to a plain shell prompt after idle/permission means the
-      // agent exited; while working it can just be a transient internal title.
-      if (lastStatus !== null && lastStatus !== 'working' && newStatus === null) {
-        restorableExitStatus = lastStatus
-        lastStatus = null
-        onAgentExited?.()
-      }
-      if (newStatus !== null) {
-        lastStatus = newStatus
       }
     },
     seedTitle(title: string): void {
-      lastStatus = detectAgentStatusFromTitle(title)
+      lastTitle = title
+      lastStatus = programActivity ?? detectAgentStatusFromTitle(title)
       restorableExitStatus = null
     },
-    restoreLastExit(): AgentStatus | null {
-      const restoredStatus = lastStatus === null ? restorableExitStatus : null
+    restoreLastExit(confirmedStatus?: AgentStatus): AgentStatus | null {
+      const restoredStatus = confirmedStatus ?? (lastStatus === null ? restorableExitStatus : null)
       if (restoredStatus !== null) {
         lastStatus = restoredStatus
       }
@@ -111,6 +152,8 @@ export function createAgentStatusTracker(
     reset(): void {
       lastStatus = null
       restorableExitStatus = null
+      programActivity = null
+      lastTitle = ''
     }
   }
 }
@@ -119,11 +162,21 @@ export function createAgentStatusTracker(
  * Normalize high-churn agent titles into stable display labels before storage.
  */
 export function normalizeTerminalTitle(title: string): string {
+  if (getDeepSeekBuildTitleStatus(title)) {
+    return title
+  }
+  const qoderStatus = qoderTitleStatus(title)
+  if (qoderStatus) {
+    const label = title.includes('Qoder CLI CN') ? 'Qoder CLI CN' : 'Qoder CLI'
+    return `${qoderStatus === 'working' ? '✦' : qoderStatus === 'permission' ? '▲' : '◇'} ${label}`
+  }
   if (!title) {
     return title
   }
 
-  if (isGeminiTerminalTitle(title)) {
+  // Why: a Pi/OMP label is cwd/session text that may contain Gemini's glyphs; its own
+  // state marker is explicit, so it outranks glyph sniffing here as it does in detection.
+  if (!getPiStateTitleStatus(title) && isGeminiTerminalTitle(title)) {
     const status = detectAgentStatusFromTitle(title)
     if (status === 'permission') {
       return `${GEMINI_PERMISSION} Gemini CLI`
@@ -131,7 +184,9 @@ export function normalizeTerminalTitle(title: string): string {
     if (status === 'working') {
       return `${GEMINI_WORKING} Gemini CLI`
     }
-    if (status === 'idle') {
+    // Why only with the glyph: a bare `gemini` title (a shell auto-title) reads idle by default,
+    // and stamping Gemini's rest glyph on it turned a name into explicit readiness.
+    if (status === 'idle' && title.includes(GEMINI_IDLE)) {
       return `${GEMINI_IDLE} Gemini CLI`
     }
   }
@@ -168,7 +223,15 @@ function canonicalizeBrailleSpinnerFrame(title: string): string {
   return canonical
 }
 
-export function detectAgentStatusFromTitle(title: string): AgentStatus | null {
+function computeAgentStatusFromTitle(title: string): AgentStatus | null {
+  const buildStatus = getDeepSeekBuildTitleStatus(title)
+  if (buildStatus) {
+    return buildStatus
+  }
+  const qoderStatus = qoderTitleStatus(title)
+  if (qoderStatus) {
+    return qoderStatus
+  }
   if (!title || isClaudeManagementTitle(title)) {
     return null
   }
@@ -180,14 +243,27 @@ export function detectAgentStatusFromTitle(title: string): AgentStatus | null {
     return containsAgentSpinnerGlyph(title) ? 'working' : 'idle'
   }
 
-  if (title.includes(GEMINI_PERMISSION)) {
-    return 'permission'
+  // Why: Pi/OMP's marker is an explicit state protocol, so it wins over the glyph and
+  // keyword gates below — its label is free-form cwd/session text that can carry either.
+  const piStateStatus = getPiStateTitleStatus(title)
+  if (piStateStatus) {
+    return piStateStatus
   }
-  if (title.includes(GEMINI_WORKING) || title.includes(GEMINI_SILENT_WORKING)) {
-    return 'working'
-  }
-  if (title.includes(GEMINI_IDLE)) {
-    return 'idle'
+
+  // Why the guard: DSH-TUI prefixes its title with `✦` while it is at REST, and that is
+  // Gemini's WORKING glyph. Reading it here made a finished DSH pane report working
+  // forever. DSH's own spinner prefixes are braille, which the spinner check below
+  // already covers, and its hooks are the authority either way.
+  if (!isDshTerminalTitle(title)) {
+    if (title.includes(GEMINI_PERMISSION)) {
+      return 'permission'
+    }
+    if (title.includes(GEMINI_WORKING) || title.includes(GEMINI_SILENT_WORKING)) {
+      return 'working'
+    }
+    if (title.includes(GEMINI_IDLE)) {
+      return 'idle'
+    }
   }
 
   // Why: resolve synthetic Pi/OMP permission/idle labels before the broader
@@ -244,6 +320,13 @@ export function detectAgentStatusFromTitle(title: string): AgentStatus | null {
 
   return 'idle'
 }
+
+/**
+ * Pure in `title`, so it is memoized on the title string: sidebar/tab selectors
+ * re-ask for the same unchanged titles on every store write.
+ */
+export const detectAgentStatusFromTitle: (title: string) => AgentStatus | null =
+  memoizeTitleClassification(computeAgentStatusFromTitle)
 
 /**
  * True when a quarter-circle spinner frame is the only agent evidence a title carries.

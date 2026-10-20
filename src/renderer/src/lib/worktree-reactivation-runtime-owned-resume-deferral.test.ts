@@ -1,9 +1,11 @@
+import { getDefaultSettings } from '../../../shared/constants'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore, type AppState } from '@/store'
 import { activateAndRevealWorktree } from './worktree-activation'
-import { makeCreatedAgentWorktree } from '@/lib/worktree-activation-created-agent-test-state'
+import { makeCreatedAgentWorktree } from '@/lib/worktree-activation-created-agent.test-fixture'
 import { makePaneKey } from '../../../shared/stable-pane-id'
+import { waitForWorktreeAgentActivationGateForTests } from './worktree-agent-activation-gate'
 
 // Red repro for the aug20 "windows 2" incident (restart-reattach/resume-relaunch):
 // a runtime-owned (paired remote) worktree's web-mirror tab holds a sleeping
@@ -91,9 +93,9 @@ function baseState(worktree: ReturnType<typeof makeCreatedAgentWorktree>): Parti
       } as never
     },
     settings: {
-      agentCmdOverrides: {},
-      setupScriptLaunchMode: 'new-tab'
-    } as unknown as ReturnType<typeof useAppStore.getState>['settings'],
+      ...getDefaultSettings(''),
+      agentCmdOverrides: {}
+    },
     markWorktreeVisited: vi.fn(),
     recordWorktreeVisit: vi.fn(),
     refreshGitHubForWorktreeIfStale: vi.fn(),
@@ -161,9 +163,16 @@ describe('runtime-owned worktree activation with an unhydrated host mirror', () 
     expect(after.sleepingAgentSessionsByPaneKey[paneKey]).toBeDefined()
   })
 
-  it('control: a local worktree with a dead pane still gets the resume fallback', () => {
-    const worktree = { ...makeCreatedAgentWorktree(), createdWithAgent: undefined }
+  it('control: a local worktree with a dead pane still gets the resume fallback', async () => {
+    const worktree = {
+      ...makeCreatedAgentWorktree(),
+      createdWithAgent: undefined,
+      hostId: 'local' as const
+    }
     const state = baseState(worktree)
+    state.activeWorkspaceExecutionHostId = null
+    state.workspaceSessionReady = true
+    state.terminalStartupRestorationReady = true
     // Local husk tab: same shape, non-mirror tab id.
     const localTabId = 'husk-tab-1'
     state.tabsByWorktree = {
@@ -217,6 +226,7 @@ describe('runtime-owned worktree activation with an unhydrated host mirror', () 
     }))
 
     activateAndRevealWorktree(worktree.id, { notifyHostRuntime: false })
+    await waitForWorktreeAgentActivationGateForTests(worktree.id)
 
     const after = useAppStore.getState()
     const tabs = after.tabsByWorktree[worktree.id] ?? []

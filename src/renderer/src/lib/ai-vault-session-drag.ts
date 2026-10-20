@@ -1,4 +1,4 @@
-import { AI_VAULT_AGENTS, type AiVaultAgent } from '../../../shared/ai-vault-types'
+import { isAiVaultAgent, type AiVaultAgent } from '../../../shared/ai-vault-types'
 import type { SleepingAgentLaunchConfig } from '../../../shared/agent-session-resume'
 import { measureClipboardTextByteLength } from '../../../shared/clipboard-text'
 import { normalizeExecutionHostId, type ExecutionHostId } from '../../../shared/execution-host'
@@ -11,6 +11,7 @@ export const AI_VAULT_SESSION_DRAG_PAYLOAD_MAX_BYTES = 16 * 1024
 export type AiVaultSessionDragPayload = {
   agent: AiVaultAgent
   sessionId: string
+  structuredSession?: { sessionId: string; workspaceId: string }
   title: string
   command: string
   // Why: drop targets must know where the session file lives (host vs local
@@ -41,12 +42,18 @@ type SerializedAiVaultSessionDragPayload = AiVaultSessionDragPayload & {
   version: 1
 }
 
-function isAiVaultAgent(value: unknown): value is AiVaultAgent {
-  return typeof value === 'string' && (AI_VAULT_AGENTS as readonly string[]).includes(value)
-}
-
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
+}
+
+function isStructuredSession(
+  value: unknown
+): value is NonNullable<AiVaultSessionDragPayload['structuredSession']> {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+  const structured = value as Record<string, unknown>
+  return isNonEmptyString(structured.sessionId) && isNonEmptyString(structured.workspaceId)
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
@@ -87,8 +94,11 @@ function isSerializedPayload(value: unknown): value is SerializedAiVaultSessionD
     payload.version === 1 &&
     isAiVaultAgent(payload.agent) &&
     isNonEmptyString(payload.sessionId) &&
+    (payload.structuredSession === undefined || isStructuredSession(payload.structuredSession)) &&
     isNonEmptyString(payload.title) &&
-    isNonEmptyString(payload.command) &&
+    (payload.structuredSession
+      ? typeof payload.command === 'string'
+      : isNonEmptyString(payload.command)) &&
     (payload.sessionFilePath === undefined || isNonEmptyString(payload.sessionFilePath)) &&
     (payload.sessionExecutionHostId === undefined ||
       Boolean(normalizeExecutionHostId(payload.sessionExecutionHostId))) &&
@@ -165,6 +175,7 @@ export function readAiVaultSessionDragData(
     const {
       agent,
       sessionId,
+      structuredSession,
       title,
       command,
       sessionFilePath,
@@ -179,6 +190,7 @@ export function readAiVaultSessionDragData(
     return {
       agent,
       sessionId,
+      ...(structuredSession ? { structuredSession } : {}),
       title,
       command,
       ...(sessionFilePath ? { sessionFilePath } : {}),

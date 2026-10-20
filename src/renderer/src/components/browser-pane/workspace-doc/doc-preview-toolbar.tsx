@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import {
   BrowserChromeToolbar,
-  type BrowserChromeElementTools
+  type BrowserChromeElementTools,
+  type BrowserChromeShareControl
 } from '@/components/browser-pane/assemble-chrome/browser-chrome-toolbar'
 import { BrowserReloadControl } from '@/components/browser-pane/assemble-chrome/browser-reload-control'
 import { translate } from '@/i18n/i18n'
-import { DocPreviewDocumentChip } from './doc-preview-document-chip'
+import { DocPreviewAddressEdit } from './doc-preview-address-edit'
 import type { DocPreviewDocumentIdentity } from './doc-preview-document-identity'
 import type { DocPreviewHistory } from './doc-preview-webview-history'
 import { DocPreviewOverflowMenu } from './doc-preview-overflow-menu'
@@ -16,6 +17,8 @@ import { DocPreviewOverflowMenu } from './doc-preview-overflow-menu'
  */
 export function DocPreviewToolbar({
   identity,
+  previewId,
+  worktreeId,
   history,
   loading,
   onReload,
@@ -27,9 +30,13 @@ export function DocPreviewToolbar({
   elementTools,
   markupActive,
   onToggleMarkup,
-  markupDisabled
+  markupDisabled,
+  shareControl
 }: {
   identity: DocPreviewDocumentIdentity
+  /** The browser page this preview is open in — what an address commit converts. */
+  previewId: string
+  worktreeId: string
   history: DocPreviewHistory
   loading: boolean
   onReload: () => void
@@ -43,6 +50,8 @@ export function DocPreviewToolbar({
   markupActive: boolean
   onToggleMarkup: () => void
   markupDisabled: boolean
+  /** Absent for documents a share link can't render. */
+  shareControl?: (control: BrowserChromeShareControl) => React.ReactNode
 }): React.JSX.Element {
   const [reloadMenuOpen, setReloadMenuOpen] = useState(false)
   const reloadLabel = translate(
@@ -62,7 +71,9 @@ export function DocPreviewToolbar({
         // Why a no-op: the identity chip has nothing to submit, so nothing can reach this.
         navigate: () => {}
       }}
-      addressSlot={<DocPreviewDocumentChip identity={identity} />}
+      addressSlot={
+        <DocPreviewAddressEdit identity={identity} previewId={previewId} worktreeId={worktreeId} />
+      }
       reloadControl={
         <BrowserReloadControl
           menuOpen={reloadMenuOpen}
@@ -90,12 +101,14 @@ export function DocPreviewToolbar({
         // be the one who spends it.
         canShowDiscoveryHint: false
       }}
+      shareControl={shareControl}
       viewSource={{
         onSelect: onOpenSource,
         label: translate(
           'auto.components.editor.HtmlDocPreview.openSourceControl',
           'Open source file'
-        )
+        ),
+        alreadyInOverflowMenu: true
       }}
       openExternal={{
         onSelect: onOpenExternally,
@@ -104,15 +117,16 @@ export function DocPreviewToolbar({
           'Open with default app'
         )
       }}
-      overflowMenu={
+      overflowMenu={(overflow) => (
         <DocPreviewOverflowMenu
           onReload={onReload}
           onHardReload={onHardReload}
           onOpenSource={onOpenSource}
           onCopyPath={onCopyPath}
           onCopyRelativePath={onCopyRelativePath}
+          overflow={overflow}
         />
-      }
+      )}
     />
   )
 }

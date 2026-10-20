@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import '@testing-library/jest-dom/vitest'
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -44,6 +44,37 @@ function renderDialog(options: ConfirmationDialogOptions): { onSettled: ReturnTy
 describe('ConfirmationDialogProvider', () => {
   afterEach(cleanup)
 
+  it('focuses the primary action when requested and confirms with Enter', async () => {
+    const { onSettled } = renderDialog({
+      title: 'Reveal hidden workspace?',
+      confirmLabel: 'Clear filters and reveal',
+      initialFocus: 'confirm'
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'ask' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Clear filters and reveal' })).toHaveFocus()
+    )
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(onSettled).toHaveBeenCalledWith(true))
+  })
+
+  it('still cancels with Escape when the primary action has focus', async () => {
+    const { onSettled } = renderDialog({
+      title: 'Reveal hidden workspace?',
+      initialFocus: 'confirm'
+    })
+    await userEvent.click(screen.getByRole('button', { name: 'ask' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toHaveFocus())
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(onSettled).toHaveBeenCalledWith(false))
+  })
+
+  it('keeps the default cancel focus for callers that do not opt in', async () => {
+    renderDialog({ title: 'Delete artifact?', confirmVariant: 'destructive' })
+    await userEvent.click(screen.getByRole('button', { name: 'ask' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus())
+  })
+
   it('omits the checkbox unless the caller opts in', async () => {
     renderDialog({ title: 'Delete artifact?' })
 
@@ -81,6 +112,39 @@ describe('ConfirmationDialogProvider', () => {
 
     expect(onConfirmed).not.toHaveBeenCalled()
     await waitFor(() => expect(onSettled).toHaveBeenCalledWith(false))
+  })
+
+  it('dismisses a prompt its caller aborts and shows the next one', async () => {
+    const first = new AbortController()
+    const settled: [string, boolean][] = []
+    function TwoPrompts(): React.JSX.Element {
+      const confirm = useConfirmationDialog()
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            void confirm({ title: 'First?', signal: first.signal }).then((c) =>
+              settled.push(['first', c])
+            )
+            void confirm({ title: 'Second?' }).then((c) => settled.push(['second', c]))
+          }}
+        >
+          ask both
+        </button>
+      )
+    }
+    render(
+      <ConfirmationDialogProvider>
+        <TwoPrompts />
+      </ConfirmationDialogProvider>
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: 'ask both' }))
+    expect(await screen.findByText('First?')).toBeInTheDocument()
+    act(() => first.abort())
+
+    expect(await screen.findByText('Second?')).toBeInTheDocument()
+    expect(settled).toEqual([['first', false]])
   })
 
   it('does not carry a checked box into the next prompt', async () => {

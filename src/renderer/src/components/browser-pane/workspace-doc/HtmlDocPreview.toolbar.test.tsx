@@ -5,6 +5,9 @@
 // showing the internal preview scheme, Back/Forward really drive the guest's history, and the chip
 // hands over the path the owner spells rather than the one the grant was minted with.
 import { act } from 'react'
+import type { BrowserPage, BrowserWorkspace } from '../../../../../shared/browser-workspace-types'
+import type * as WebviewRegistryModule from '../host-guest/webview-registry'
+import type * as DocPreviewArtifactShareModule from './doc-preview-artifact-share'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -20,26 +23,49 @@ const clipboard = vi.hoisted(() => ({ writes: [] as string[] }))
 const grabCalls: { browserPageId: string; enabled: boolean }[] = []
 const osOpens: string[] = []
 
-vi.mock('@/lib/doc-preview-grants', () => ({
-  buildDocPreviewGrantRequest: () => ({
+const grants = vi.hoisted(() => {
+  const mintedLocation = {
     owner: {
       kind: 'runtime' as const,
       environmentId: 'env-1',
       worktreeSelector: 'id:wt-1',
       worktreeRoot: '/repo'
     },
+    requestBase: '/repo',
     root: '/repo',
-    entryRelativePath: ENTRY_RELATIVE_PATH
-  }),
+    entryRelativePath: 'docs/reports/index.html'
+  }
+  const shareControlCalls: unknown[][] = []
+  return { mintedLocation, requestLocation: mintedLocation, shareControlCalls }
+})
+
+vi.mock('@/lib/doc-preview-grants', () => ({
+  buildDocPreviewGrantRequest: () => grants.requestLocation,
+  // The real cache keeps the first mint's handle for the tab, whatever a later request says.
   ensureDocPreviewGrant: () =>
     Promise.resolve({
       grantId: GRANT_ID,
-      url: `orca-preview://${GRANT_ID}/${ENTRY_RELATIVE_PATH}`
+      url: `orca-preview://${GRANT_ID}/${ENTRY_RELATIVE_PATH}`,
+      location: grants.mintedLocation
     }),
   releaseDocPreviewGrant: () => undefined
 }))
 
-vi.mock('@/components/browser-pane/host-guest/webview-registry', () => ({
+vi.mock('./doc-preview-artifact-share', async (importOriginal) => {
+  const actual = await importOriginal<typeof DocPreviewArtifactShareModule>()
+  return {
+    ...actual,
+    buildDocPreviewShareControl: (
+      ...args: Parameters<typeof actual.buildDocPreviewShareControl>
+    ) => {
+      grants.shareControlCalls.push(args)
+      return actual.buildDocPreviewShareControl(...args)
+    }
+  }
+})
+
+vi.mock('@/components/browser-pane/host-guest/webview-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof WebviewRegistryModule>()),
   moveFocusToRendererBeforeWebviewDetach: () => undefined
 }))
 
@@ -52,7 +78,8 @@ vi.mock('@/lib/execution-host-display-label', () => ({
 const store = vi.hoisted(() => ({
   openedFiles: [] as unknown[],
   downloads: [] as string[],
-  pageStateUpdates: [] as { pageId: string; updates: { title?: string } }[]
+  pageStateUpdates: [] as { pageId: string; updates: { title?: string } }[],
+  conversions: [] as { pageId: string; target: unknown }[]
 }))
 
 // The document lives on the SSH host that owns the workspace, which is what makes the preview a
@@ -94,6 +121,15 @@ const storeState = {
   },
   updateBrowserPageState: (pageId: string, updates: { title?: string }) => {
     store.pageStateUpdates.push({ pageId, updates })
+  },
+  browserUrlHistory: [],
+  workspaceDocHistory: [],
+  recordWorkspaceDocVisit: () => undefined,
+  browserDefaultSearchEngine: 'google',
+  browserKagiSessionLink: null,
+  convertBrowserPage: (pageId: string, target: unknown) => {
+    store.conversions.push({ pageId, target })
+    return { id: 'converted-1' }
   }
 }
 
@@ -116,13 +152,14 @@ type StubWebview = Element & {
 async function renderPreview(
   container: HTMLDivElement,
   root: Root,
-  options: { holdsGuestFocus?: boolean } = {}
+  options: { holdsGuestFocus?: boolean; isActive?: boolean } = {}
 ): Promise<StubWebview> {
   const { HtmlDocPreview } = await import('./HtmlDocPreview')
   await act(async () => {
     root.render(
       <TooltipProvider>
         <HtmlDocPreview
+          isActive={options.isActive ?? true}
           previewId="preview-1"
           filePath={ABSOLUTE_PATH}
           relativePath={ENTRY_RELATIVE_PATH}
@@ -189,6 +226,7 @@ describe('HtmlDocPreview browser chrome', () => {
         }
       },
       browser: {
+        unregisterGuest: () => Promise.resolve(),
         setGrabMode: (args: { browserPageId: string; enabled: boolean }) => {
           grabCalls.push(args)
           return Promise.resolve({ ok: true })
@@ -210,6 +248,76 @@ describe('HtmlDocPreview browser chrome', () => {
       mounted = false
     }
     container.remove()
+  })
+
+  it('counts document guests in the workspace budget and restores only on activation', async () => {
+    const { hasLiveBrowserGuest, webviewRegistry } = await import('../host-guest/webview-registry')
+    const { worktreeHoldsLiveBrowserGuests, selectBrowserGuestEvictionWorktreeIds } =
+      await import('../host-guest/browser-guest-worktree-retention')
+    const { destroyWorktreeBrowserGuests } = await import('@/store/slices/browser-webview-cleanup')
+    const guest = await renderPreview(container, root)
+    expect(hasLiveBrowserGuest('preview-1')).toBe(true)
+    expect(await renderPreview(container, root, { isActive: false })).toBe(guest)
+    const page: BrowserPage = {
+      id: 'preview-1',
+      workspaceId: 'browser-1',
+      worktreeId: 'wt-1',
+      url: 'about:blank',
+      title: 'Report',
+      loading: false,
+      faviconUrl: null,
+      canGoBack: false,
+      canGoForward: false,
+      loadError: null,
+      createdAt: 1,
+      docLocation: { kind: 'workspace-doc', worktreeId: 'wt-1', filePath: ABSOLUTE_PATH }
+    }
+    const browsers: BrowserWorkspace[] = [{ ...page, id: 'browser-1', pageIds: [page.id] }]
+    const pages: Record<string, BrowserPage[]> = { 'browser-1': [page] }
+    const evicted = selectBrowserGuestEvictionWorktreeIds({
+      orderedWorktreeIds: ['wt-1'],
+      activeWorktreeId: 'wt-2',
+      limit: 0,
+      isRetained: () => true,
+      isEvictable: () => true,
+      holdsLiveGuests: () => worktreeHoldsLiveBrowserGuests(browsers, pages, hasLiveBrowserGuest)
+    })
+    expect(evicted).toEqual(['wt-1'])
+    await act(async () => {
+      destroyWorktreeBrowserGuests({ 'wt-1': browsers }, pages, 'wt-1')
+    })
+    expect(guest.isConnected).toBe(false)
+    expect(hasLiveBrowserGuest('preview-1')).toBe(false)
+    expect(container.querySelector('webview')).toBeNull()
+    const restored = await renderPreview(container, root)
+    expect(restored).not.toBe(guest)
+    expect(webviewRegistry.get('preview-1')).toBe(restored)
+    expect(await renderPreview(container, root, { isActive: false })).toBe(restored)
+    expect(await renderPreview(container, root)).toBe(restored)
+    await act(async () => root.unmount())
+    mounted = false
+    expect(hasLiveBrowserGuest('preview-1')).toBe(false)
+  })
+
+  // Why: Share must read and key from the host the grant was minted for, not the one selected now.
+  it('shares through the minted grant even after the workspace resolves to another host', async () => {
+    grants.shareControlCalls.length = 0
+    await renderPreview(container, root)
+    expect(grants.shareControlCalls.at(-1)).toEqual([ABSOLUTE_PATH, grants.mintedLocation])
+    expect(button(container, 'Share as artifact')).not.toBeNull()
+
+    grants.requestLocation = {
+      ...grants.mintedLocation,
+      owner: { ...grants.mintedLocation.owner, environmentId: 'env-2' }
+    }
+    storeState.settings = { activeRuntimeEnvironmentId: 'env-2' }
+    try {
+      await renderPreview(container, root)
+      expect(grants.shareControlCalls.at(-1)).toEqual([ABSOLUTE_PATH, grants.mintedLocation])
+    } finally {
+      grants.requestLocation = grants.mintedLocation
+      storeState.settings = { activeRuntimeEnvironmentId: 'env-1' }
+    }
   })
 
   it('identifies the document by its workspace path and owning machine', async () => {
@@ -283,7 +391,7 @@ describe('HtmlDocPreview browser chrome', () => {
   it('hands the identity chip straight to the height-pinned address slot', async () => {
     await renderPreview(container, root)
 
-    const chip = button(container, 'Copy file path')
+    const chip = button(container, 'Edit address')
     const slot = container.querySelector('[data-browser-chrome-address-slot]')
     expect(slot).not.toBeNull()
     expect(chip.parentElement).toBe(slot)
@@ -306,7 +414,57 @@ describe('HtmlDocPreview browser chrome', () => {
     expect(store.pageStateUpdates).toEqual([
       { pageId: 'preview-1', updates: { title: 'Quarterly Report' } }
     ])
-    expect(button(container, 'Copy file path').textContent).toContain(ENTRY_RELATIVE_PATH)
+    expect(button(container, 'Edit address').textContent).toContain(ENTRY_RELATIVE_PATH)
+  })
+
+  // The convergence contract (STA-5681): clicking the chip swaps in the real address bar,
+  // prefilled with the file the reader can retype, and a committed web URL converts the page —
+  // it never navigates a doc guest, whose policy would deny the URL anyway.
+  it('edits the address in place and converts a committed URL instead of navigating', async () => {
+    await renderPreview(container, root)
+    store.conversions.length = 0
+
+    await act(async () => {
+      button(container, 'Edit address').click()
+    })
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-browser-chrome-address-slot] input'
+    )
+    expect(input).not.toBeNull()
+    expect(input?.value).toBe(ENTRY_RELATIVE_PATH)
+
+    await act(async () => {
+      input!.value = 'https://example.com/'
+      input!.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+
+    expect(store.conversions).toEqual([
+      { pageId: 'preview-1', target: { kind: 'web', url: 'https://example.com/' } }
+    ])
+  })
+
+  // Escape hands the slot back to the chip with nothing converted — the reader looked, then left.
+  // The first press belongs to the address bar (it closes the suggestion dropdown, as in the URL
+  // pane); the second one reaches the wrapper and exits the edit.
+  it('returns to the chip on Escape without converting', async () => {
+    await renderPreview(container, root)
+    store.conversions.length = 0
+
+    await act(async () => {
+      button(container, 'Edit address').click()
+    })
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-browser-chrome-address-slot] input'
+    )
+    await act(async () => {
+      input!.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    await act(async () => {
+      input!.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+
+    expect(store.conversions).toEqual([])
+    expect(button(container, 'Edit address')).not.toBeNull()
   })
 
   // Why: the browsing tour walks anchors by name, and a preview answering to the browser pane's
@@ -317,16 +475,29 @@ describe('HtmlDocPreview browser chrome', () => {
     expect(container.querySelector('[data-contextual-tour-target]')).toBeNull()
   })
 
+  // Why the menu and no longer the chip: clicking the chip now edits the address, so the menu is
+  // the one copy affordance left for the absolute path the owning machine spells.
   it('copies the absolute path the owning machine spells, not the workspace-relative one', async () => {
     await renderPreview(container, root)
 
     await act(async () => {
-      button(container, 'Copy file path').click()
+      // Why not click(): the Radix trigger opens on pointerdown, which happy-dom does not synthesize.
+      button(container, 'Preview options').dispatchEvent(
+        new window.PointerEvent('pointerdown', { bubbles: true, button: 0 })
+      )
+    })
+    const absoluteCopy = [...document.querySelectorAll('[role="menuitem"]')].find(
+      (item) =>
+        item.textContent?.includes('Copy file path') &&
+        !item.textContent.includes('Copy relative path')
+    )
+    expect(absoluteCopy).toBeDefined()
+
+    await act(async () => {
+      ;(absoluteCopy as HTMLElement).click()
     })
 
     expect(clipboard.writes).toEqual([ABSOLUTE_PATH])
-    // The icon swap alone says nothing to a screen reader, so the control renames itself.
-    expect(button(container, 'Copied')).not.toBeNull()
   })
 
   it('starts with both history controls disabled', async () => {
@@ -494,11 +665,11 @@ describe('HtmlDocPreview guest focus', () => {
 
   beforeEach(() => {
     focused = []
-    focusSpy = vi
-      .spyOn(HTMLElement.prototype, 'focus')
-      .mockImplementation(function (this: HTMLElement) {
-        focused.push(this)
-      })
+    focusSpy = vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      focused.push(this)
+    })
     container = document.createElement('div')
     document.body.appendChild(container)
     root = createRoot(container)

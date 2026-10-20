@@ -1,38 +1,42 @@
-import { getRepoExecutionHostId, parseExecutionHostId } from '../../../shared/execution-host'
+import {
+  getRepoExecutionHostId,
+  parseExecutionHostId,
+  toRuntimeExecutionHostId,
+  UNRESOLVED_OWNER_HOST_ID
+} from '../../../shared/execution-host'
 import type { ExecutionHostId } from '../../../shared/execution-host'
-import type { GlobalSettings } from '../../../shared/global-settings-types'
 import type { Worktree } from '../../../shared/worktree/types'
 import { parseWorkspaceKey } from '../../../shared/workspace-scope'
-import { FLOATING_TERMINAL_WORKTREE_ID } from '../../../shared/constants'
 import { getRepoIdFromWorktreeId } from '@/store/slices/worktree-helpers'
 import {
   findIndexedRepoOwner as findRepoRecord,
   findIndexedWorktreeOwner as findWorktreeRecord,
   hasIndexedDetectedWorktree,
+  resolveIndexedProjectGroupOwner,
   resolveIndexedRepoOwner,
   resolveIndexedWorktreeOwner
 } from './worktree-runtime-owner-index'
 import { getSingleFocusedRuntimeEnvironmentId } from './single-runtime-legacy-owner'
+import { getPairedWebClientEnvironmentId } from './paired-web-client-host'
 import {
+  findFolderWorkspaceOwner,
   getExecutionHostIdForFolderWorkspace,
-  getExplicitRuntimeEnvironmentIdForFolderWorkspace,
   getRuntimeEnvironmentIdForFolderWorkspace
 } from './folder-workspace-runtime-owner'
 import {
-  resolveActiveWorkspaceRoute,
-  resolveExplicitWorktreeOperationRouteResult,
+  namedHostForOwnerRef,
+  resolveOwner,
+  someWorktreeCopy,
+  type WorkspaceOwnerRef
+} from './resolve-owner'
+import { SELF_LOCAL_AUTHORITY, type HostAuthority } from '../../../shared/host-authority'
+import type { ExecutionHostOwnerMatch } from '../../../shared/worktree-execution-host-resolution'
+import {
+  getFloatingWorkspaceOperationRoute,
   resolveWorktreeOperationRouteResult
 } from './worktree-operation-route'
+import { resolveExplicitWorktreeOperationRouteResult } from './worktree-operation-catalog-route'
 import type { WorktreeRuntimeOwnerState } from './worktree-runtime-owner-state'
-export type { WorktreeRuntimeOwnerState } from './worktree-runtime-owner-state'
-export { getRuntimeSessionMirrorEnvironmentIds } from './runtime-session-mirror-owners'
-
-function getExplicitRuntimeEnvironmentIdFromHost(
-  executionHostId: string | null | undefined
-): string | null {
-  const parsed = parseExecutionHostId(executionHostId)
-  return parsed?.kind === 'runtime' ? parsed.environmentId : null
-}
 
 function getProjectedRuntimeOwnerEnvironmentId(
   worktree: Pick<Worktree, 'runtimeOwnerEnvironmentId'> | null | undefined
@@ -55,20 +59,15 @@ function getActiveWorkspaceExecutionHostId(
     : null
 }
 
-export function getRuntimeEnvironmentIdForWorktree(
+/**
+ * The server the pre-`resolveOwner` resolver picked for a row that names no host (`null`: this
+ * app or a twin). Only {@link resolveOwnerWithLegacyFallback} reads it, after a named host,
+ * a twin and every stamped row have already been answered.
+ */
+function legacyRuntimeEnvironmentId(
   state: WorktreeRuntimeOwnerState,
-  worktreeId: string | null | undefined
+  worktreeId: string
 ): string | null {
-  if (!worktreeId) {
-    return null
-  }
-  if (worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
-    return null
-  }
-  const activeRoute = resolveActiveWorkspaceRoute(state, worktreeId)
-  if (activeRoute) {
-    return activeRoute.runtimeEnvironmentId
-  }
   const workspaceScope = parseWorkspaceKey(worktreeId)
   if (workspaceScope?.type === 'folder') {
     return getRuntimeEnvironmentIdForFolderWorkspace(state, workspaceScope.folderWorkspaceId)
@@ -82,9 +81,13 @@ export function getRuntimeEnvironmentIdForWorktree(
     const projectedRuntimeOwner = getProjectedRuntimeOwnerEnvironmentId(owner)
     const parsedHost = parseExecutionHostId(owner.hostId)
     const hasDetectedOwner = hasIndexedDetectedWorktree(state.detectedWorktreesByRepo, worktreeId)
+    // Why: a row on a web client that names no server is still reached through its only one.
+    const onlyHost = getPairedWebClientEnvironmentId(state)
     if (!hasDetectedOwner && (projectedRuntimeOwner || parsedHost)) {
       return (
-        projectedRuntimeOwner || (parsedHost?.kind === 'runtime' ? parsedHost.environmentId : null)
+        projectedRuntimeOwner ||
+        (parsedHost?.kind === 'runtime' ? parsedHost.environmentId : onlyHost) ||
+        null
       )
     }
     if (!hasDetectedOwner) {
@@ -98,74 +101,41 @@ export function getRuntimeEnvironmentIdForWorktree(
       ) {
         const repoHost = parseExecutionHostId(getRepoExecutionHostId(repoResolution.owner))
         if (repoHost) {
-          return repoHost.kind === 'runtime' ? repoHost.environmentId : null
+          return (repoHost.kind === 'runtime' ? repoHost.environmentId : onlyHost) || null
         }
       }
     }
   }
   const resolution = resolveWorktreeOperationRouteResult(state, worktreeId)
-  return resolution.kind === 'resolved' ? resolution.route.runtimeEnvironmentId : null
+  return resolution.kind === 'resolved' ? resolution.route.runtimeEnvironmentId || null : null
 }
 
-export function getExplicitRuntimeEnvironmentIdForWorktree(
-  state: WorktreeRuntimeOwnerState,
-  worktreeId: string | null | undefined
-): string | null {
-  if (!worktreeId) {
-    return null
-  }
-  const activeRoute = resolveActiveWorkspaceRoute(state, worktreeId)
-  if (activeRoute) {
-    return activeRoute.runtimeEnvironmentId
-  }
-  const workspaceScope = parseWorkspaceKey(worktreeId)
-  if (workspaceScope?.type === 'folder') {
-    return getExplicitRuntimeEnvironmentIdForFolderWorkspace(
-      state,
-      workspaceScope.folderWorkspaceId
-    )
-  }
-  const hasDetectedOwner = hasIndexedDetectedWorktree(state.detectedWorktreesByRepo, worktreeId)
-  if (hasDetectedOwner) {
-    // Why: detected-only rows are selectable before the primary catalog lands; use the same
-    // ambiguity-aware explicit provenance as filesystem and terminal operations.
-    const resolution = resolveExplicitWorktreeOperationRouteResult(state, worktreeId)
-    return resolution.kind === 'resolved' ? resolution.route.runtimeEnvironmentId : null
-  }
-  if (resolveIndexedWorktreeOwner(state.worktreesByRepo, worktreeId).kind === 'ambiguous') {
-    return null
-  }
-  const worktree = findWorktreeRecord(state.worktreesByRepo, worktreeId)
-  const projectedRuntimeOwner = getProjectedRuntimeOwnerEnvironmentId(worktree)
-  if (projectedRuntimeOwner) {
-    return projectedRuntimeOwner
-  }
-  const parsedWorktreeHost = parseExecutionHostId(worktree?.hostId)
-  if (parsedWorktreeHost?.kind === 'runtime') {
-    return parsedWorktreeHost.environmentId
-  }
-  if (parsedWorktreeHost?.kind === 'local') {
-    return null
-  }
-  const repoId = worktree?.repoId ?? getRepoIdFromWorktreeId(worktreeId)
-  const repo = findRepoRecord(state.repos, repoId)
-  if (!repo) {
-    return null
-  }
-  // Why: session mirroring is expensive; a merely focused runtime must not make
-  // legacy/local worktrees look remote-owned.
-  return getExplicitRuntimeEnvironmentIdFromHost(getRepoExecutionHostId(repo))
-}
-
-export function getExecutionHostIdForWorktree(
-  state: WorktreeRuntimeOwnerState,
-  worktreeId: string | null | undefined
+function getFocusedRuntimeOrLocalExecutionHostId(
+  state: WorktreeRuntimeOwnerState
 ): ExecutionHostId {
+  const environmentId = getSingleFocusedRuntimeEnvironmentId(state)
+  return environmentId ? `runtime:${encodeURIComponent(environmentId)}` : 'local'
+}
+
+/**
+ * The catalog's answer, or `null` when it has none: no row names an owner for this worktree (a git
+ * worktree without a repo row, a folder workspace without a folder-workspace row) and nothing more
+ * specific — active-workspace host, detected owner, per-worktree host — applies either. A row that
+ * exists and names no owner is a positive `'local'`; a row that has not landed is silence.
+ * {@link getExecutionHostIdForWorktree} papers over that silence with the focused-runtime-or-local
+ * default, which is the right answer for routing an operation and the wrong one for a caller that
+ * reads the host as evidence.
+ */
+export function getKnownExecutionHostIdForWorktree(
+  state: WorktreeRuntimeOwnerState,
+  worktreeId: string | null | undefined
+): ExecutionHostId | null {
   if (!worktreeId) {
     return 'local'
   }
-  if (worktreeId === FLOATING_TERMINAL_WORKTREE_ID) {
-    return 'local'
+  const floatingRoute = getFloatingWorkspaceOperationRoute(worktreeId)
+  if (floatingRoute) {
+    return floatingRoute.executionHostId
   }
   const activeHostId = getActiveWorkspaceExecutionHostId(state, worktreeId)
   if (activeHostId) {
@@ -173,7 +143,11 @@ export function getExecutionHostIdForWorktree(
   }
   const workspaceScope = parseWorkspaceKey(worktreeId)
   if (workspaceScope?.type === 'folder') {
-    return getExecutionHostIdForFolderWorkspace(state, workspaceScope.folderWorkspaceId)
+    const hostId = getExecutionHostIdForFolderWorkspace(state, workspaceScope.folderWorkspaceId)
+    // Why: the folder resolver substitutes `'local'` for a missing row the same way this one does.
+    return hostId === 'local' && !findFolderWorkspaceOwner(state, workspaceScope.folderWorkspaceId)
+      ? null
+      : hostId
   }
   const hasDetectedOwner = hasIndexedDetectedWorktree(state.detectedWorktreesByRepo, worktreeId)
   if (hasDetectedOwner) {
@@ -181,11 +155,13 @@ export function getExecutionHostIdForWorktree(
     if (resolution.kind === 'resolved') {
       return (
         resolution.route.executionHostId ??
-        `runtime:${encodeURIComponent(resolution.route.runtimeEnvironmentId ?? 'unresolved-owner')}`
+        (resolution.route.runtimeEnvironmentId
+          ? toRuntimeExecutionHostId(resolution.route.runtimeEnvironmentId)
+          : UNRESOLVED_OWNER_HOST_ID)
       )
     }
     // Why: conflicting detected publications must never enable paired-client-local PTY behavior.
-    return 'runtime:unresolved-owner'
+    return UNRESOLVED_OWNER_HOST_ID
   }
   const worktree = findWorktreeRecord(state.worktreesByRepo, worktreeId)
   const worktreeHostId = getExecutionHostIdFromWorktreeHost(worktree?.hostId)
@@ -196,20 +172,98 @@ export function getExecutionHostIdForWorktree(
   }
   const repoId = worktree?.repoId ?? getRepoIdFromWorktreeId(worktreeId)
   const repo = findRepoRecord(state.repos, repoId)
-  const hasExplicitOwner = Boolean(repo?.executionHostId?.trim() || repo?.connectionId?.trim())
-  if (repo && hasExplicitOwner) {
+  if (!repo) {
+    return null
+  }
+  const hasExplicitOwner = Boolean(repo.executionHostId?.trim() || repo.connectionId?.trim())
+  if (hasExplicitOwner) {
     return getRepoExecutionHostId(repo)
   }
-  const environmentId = getSingleFocusedRuntimeEnvironmentId(state)
-  return environmentId ? `runtime:${encodeURIComponent(environmentId)}` : 'local'
+  return getFocusedRuntimeOrLocalExecutionHostId(state)
 }
 
-export function getSettingsForWorktreeRuntimeOwner(
+export function getExecutionHostIdForWorktree(
   state: WorktreeRuntimeOwnerState,
   worktreeId: string | null | undefined
-): Pick<GlobalSettings, 'activeRuntimeEnvironmentId'> {
-  return {
-    ...state.settings,
-    activeRuntimeEnvironmentId: getRuntimeEnvironmentIdForWorktree(state, worktreeId)
+): ExecutionHostId {
+  return (
+    getKnownExecutionHostIdForWorktree(state, worktreeId) ??
+    getFocusedRuntimeOrLocalExecutionHostId(state)
+  )
+}
+
+function hasRowHost(row: { executionHostId?: string | null; connectionId?: string | null }) {
+  return Boolean(row.executionHostId?.trim() || row.connectionId?.trim())
+}
+
+/** Through the owner index: rows on two hosts always include a stamped one. */
+function hasStampedRepoRow(state: WorktreeRuntimeOwnerState, repoId: string): boolean {
+  const repo = resolveIndexedRepoOwner(state.repos, repoId)
+  return repo.kind === 'ambiguous' || (repo.kind === 'resolved' && hasRowHost(repo.owner))
+}
+
+/** A row that names its host; without one the deprecated resolver's guess still applies. */
+function hasHostEvidence(state: WorktreeRuntimeOwnerState, workspaceId: string): boolean {
+  if (getFloatingWorkspaceOperationRoute(workspaceId)) {
+    return true
   }
+  const scope = parseWorkspaceKey(workspaceId)
+  if (scope?.type === 'folder') {
+    const folder = findFolderWorkspaceOwner(state, scope.folderWorkspaceId)
+    if (!folder || hasRowHost(folder)) {
+      return Boolean(folder)
+    }
+    const group = resolveIndexedProjectGroupOwner(state.projectGroups, folder.projectGroupId)
+    return group.kind === 'ambiguous' || (group.kind === 'resolved' && hasRowHost(group.owner))
+  }
+  const repoId = getRepoIdFromWorktreeId(workspaceId)
+  return (
+    someWorktreeCopy(state, workspaceId, (row) =>
+      Boolean(row.hostId?.trim() || row.runtimeOwnerEnvironmentId?.trim())
+    ) || hasStampedRepoRow(state, repoId)
+  )
+}
+
+/**
+ * `resolveOwner` for callers folding off the deprecated resolvers: a named host and stamped rows
+ * resolve as `resolveOwner` does (twins and contested hosts stay `ambiguous`), while `missing` and
+ * rows with no host stamp keep the deprecated answer, single focused runtime included.
+ */
+export function resolveOwnerWithLegacyFallback(
+  state: WorktreeRuntimeOwnerState,
+  ref: WorkspaceOwnerRef
+): ExecutionHostOwnerMatch<HostAuthority> {
+  const match = resolveOwner(state, ref)
+  if (
+    namedHostForOwnerRef(state, ref) ||
+    match.kind === 'ambiguous' ||
+    (match.kind === 'resolved' && hasHostEvidence(state, ref.workspaceId))
+  ) {
+    return match
+  }
+  const legacyEnvironmentId = legacyRuntimeEnvironmentId(state, ref.workspaceId)
+  if (legacyEnvironmentId) {
+    return {
+      kind: 'resolved',
+      owner: { endpoint: { kind: 'environment', environmentId: legacyEnvironmentId }, at: 'local' }
+    }
+  }
+  return match.kind === 'resolved' ? match : { kind: 'resolved', owner: SELF_LOCAL_AUTHORITY }
+}
+
+/**
+ * The paired server behind {@link resolveOwnerWithLegacyFallback}, or `null` for this app, a
+ * directly dialed SSH target or a twin: for readers whose twin answer is "no server", as before.
+ */
+export function runtimeEnvironmentIdWithLegacyFallbackUnlessTwin(
+  state: WorktreeRuntimeOwnerState,
+  workspaceId: string | null | undefined
+): string | null {
+  if (!workspaceId) {
+    return null
+  }
+  const match = resolveOwnerWithLegacyFallback(state, { workspaceId })
+  return match.kind === 'resolved' && match.owner.endpoint.kind === 'environment'
+    ? match.owner.endpoint.environmentId
+    : null
 }

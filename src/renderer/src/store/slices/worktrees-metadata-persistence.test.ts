@@ -3,7 +3,10 @@ import type { AppState } from '../types'
 import { toast } from 'sonner'
 import type { RuntimeEnvironmentCallRequest } from '../../runtime/runtime-compatibility-test-fixture'
 import { getHostedReviewCacheKey } from './hosted-review-cache-identity'
-import { getGitHubPRCacheKey, getLegacyGitHubPRCacheKey } from './github-cache-key'
+import {
+  getGitHubPRCacheKey,
+  getLegacyGitHubPRCacheKey
+} from '../../../../shared/github/github-cache-key'
 import { makeWorktree } from './worktrees-slice-test-fixtures'
 import {
   createTestStore,
@@ -39,7 +42,12 @@ describe('worktree remote runtime mutations', () => {
 
   it('persists worktree metadata through the active remote runtime environment', async () => {
     const store = createTestStore()
-    const wt = makeWorktree({ id: 'repo1::/path/wt1', repoId: 'repo1', path: '/path/wt1' })
+    const wt = makeWorktree({
+      id: 'repo1::/path/wt1',
+      repoId: 'repo1',
+      path: '/path/wt1',
+      hostId: 'runtime:env-1'
+    })
     runtimeEnvironmentCall.mockResolvedValue({
       id: 'rpc-set',
       ok: true,
@@ -204,6 +212,7 @@ describe('worktree remote runtime mutations', () => {
       executionHostId: 'local',
       updates: {
         displayName: 'Fix auth',
+        displayNameIsPinned: true,
         pendingFirstAgentMessageRename: false,
         firstAgentMessageRenameError: null
       }
@@ -361,6 +370,7 @@ describe('worktree remote runtime mutations', () => {
 
     expect(fetchHostedReviewForBranch).toHaveBeenCalledWith('/repo1', 'review-branch', {
       repoId: 'repo1',
+      repoOwnerExecutionHostId: 'local',
       linkedGitHubPR: null,
       linkedGitLabMR: 789,
       linkedBitbucketPR: null,

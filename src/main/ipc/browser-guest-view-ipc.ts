@@ -17,6 +17,7 @@ import {
 export function registerBrowserGuestViewHandlers(): void {
   ipcMain.removeHandler('browser:openDevTools')
   ipcMain.removeHandler('browser:setViewportOverride')
+  ipcMain.removeAllListeners?.('browser:reportViewportScrollState')
   ipcMain.removeHandler('browser:setAnnotationViewportBridge')
   ipcMain.removeHandler('browser:acceptDownload')
   ipcMain.removeHandler('browser:cancelDownload')
@@ -70,6 +71,36 @@ export function registerBrowserGuestViewHandlers(): void {
     }
   )
 
+  ipcMain.on?.(
+    'browser:reportViewportScrollState',
+    (
+      event,
+      args: {
+        browserPageId?: unknown
+        state?: {
+          scrollLeft?: unknown
+          scrollTop?: unknown
+          maxScrollLeft?: unknown
+          maxScrollTop?: unknown
+        }
+      }
+    ) => {
+      if (!isTrustedBrowserRenderer(event.sender) || typeof args?.browserPageId !== 'string') {
+        return
+      }
+      const state = args.state
+      if (!state) {
+        return
+      }
+      browserManager.setViewportScrollState(args.browserPageId, event.sender.id, {
+        scrollLeft: Number(state.scrollLeft),
+        scrollTop: Number(state.scrollTop),
+        maxScrollLeft: Number(state.maxScrollLeft),
+        maxScrollTop: Number(state.maxScrollTop)
+      })
+    }
+  )
+
   ipcMain.handle(
     'browser:setAnnotationViewportBridge',
     (event, args: BrowserSetAnnotationViewportBridgeArgs): Promise<boolean> | boolean => {
@@ -81,6 +112,8 @@ export function registerBrowserGuestViewHandlers(): void {
         typeof args.enabled !== 'boolean' ||
         typeof args.emitViewport !== 'boolean' ||
         !isValidBrowserAnnotationViewportBridgeMarkers(args.markers) ||
+        (args.selectionId !== undefined &&
+          (typeof args.selectionId !== 'string' || args.selectionId.length > 80)) ||
         !isValidBrowserAnnotationViewportBridgeToken(args.token)
       ) {
         return false
@@ -101,6 +134,7 @@ export function registerBrowserGuestViewHandlers(): void {
           enabled: args.enabled,
           emitViewport: args.emitViewport,
           markers: args.markers,
+          selectionId: args.selectionId,
           token: args.token
         },
         resolveGuest
