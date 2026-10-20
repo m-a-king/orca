@@ -61,9 +61,6 @@ export function buildShortcutDefinitionCatalog(options: {
       ])
     }
   }
-  // Why: the pass above judges the active map, which the loader has already
-  // stripped of conflicting overrides — layer on warnings judged on the file
-  // so a dropped binding is still explained on its row.
   for (const [actionId, messages] of buildKeybindingConflictWarnings(
     options.keybindingSnapshot ?? null,
     options.platform,

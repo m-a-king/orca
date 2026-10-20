@@ -64,8 +64,6 @@ describe('shortcut groups', () => {
   })
 
   it('reports a file override the loader dropped for conflicting', () => {
-    // Why: the loader strips a conflicting override before the active map
-    // reaches the catalog, so only the snapshot can still explain the row.
     const catalog = buildShortcutDefinitionCatalog({
       disabledTuiAgents: [],
       pluginCommands: [],

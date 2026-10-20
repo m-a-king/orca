@@ -37,9 +37,7 @@ export function hasCommonBindingOverride(
   return hasOwnBindingOverride(snapshot?.commonOverrides ?? {}, actionId)
 }
 
-// Why: the loader strips conflicting overrides before the app sees them, so the
-// active map can never explain a conflict. These are the file's bindings as
-// written, which is what conflict reporting has to judge.
+// Why: must layer the file the way readKeybindingFile does, or the pane judges bindings the loader never saw.
 export function getFileBindingOverrides(
   snapshot: KeybindingFileSnapshot | null,
   platform: NodeJS.Platform

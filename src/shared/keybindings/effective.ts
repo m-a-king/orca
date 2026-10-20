@@ -96,6 +96,43 @@ export function isKeybindingPotentialTerminalConflict(definition: KeybindingDefi
   return !isKeybindingAllowedInTerminal(definition)
 }
 
+// Why: mirrors resolveWindowShortcutAction's routing and forwardGuestShortcutInput's order, minus dictation, which main lets through while voice is off (the default); the interception and guest-precedence tests pin this.
+const MAIN_PROCESS_INTERCEPTED_ACTIONS: Partial<
+  Record<KeybindingActionId, 'beforeBrowserChords' | 'afterBrowserChords'>
+> = {
+  'worktree.history.back': 'beforeBrowserChords',
+  'worktree.history.forward': 'beforeBrowserChords',
+  'floatingTerminal.toggle': 'beforeBrowserChords',
+  'zoom.in': 'beforeBrowserChords',
+  'zoom.out': 'beforeBrowserChords',
+  'zoom.reset': 'beforeBrowserChords',
+  'app.settings': 'afterBrowserChords',
+  'app.forceReload': 'afterBrowserChords',
+  'worktree.palette': 'afterBrowserChords',
+  'sidebar.left.toggle': 'afterBrowserChords',
+  'sidebar.right.toggle': 'afterBrowserChords',
+  'worktree.quickOpen': 'afterBrowserChords',
+  'workspace.create': 'afterBrowserChords',
+  'workspace.delete': 'afterBrowserChords',
+  'workspace.openBoard': 'afterBrowserChords',
+  'view.tasks': 'afterBrowserChords',
+  'dashboard.toggle': 'afterBrowserChords',
+  'tab.previousRecent': 'beforeBrowserChords',
+  'workspace.selectByIndex': 'afterBrowserChords',
+  'tab.selectByIndex': 'afterBrowserChords',
+  'tab.openQuickCommandsMenu': 'afterBrowserChords'
+}
+
+export function isKeybindingInterceptedByMainProcess(definition: KeybindingDefinition): boolean {
+  return MAIN_PROCESS_INTERCEPTED_ACTIONS[definition.id] !== undefined
+}
+
+export function isKeybindingInterceptedBeforeBrowserChords(
+  definition: KeybindingDefinition
+): boolean {
+  return MAIN_PROCESS_INTERCEPTED_ACTIONS[definition.id] === 'beforeBrowserChords'
+}
+
 export function keybindingIsActiveInContext(
   definition: KeybindingDefinition,
   options: KeybindingMatchOptions = {}

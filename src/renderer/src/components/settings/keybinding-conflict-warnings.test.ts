@@ -11,7 +11,6 @@ function snapshotWith(options: {
     path: '/tmp/keybindings.json',
     platform: 'darwin',
     exists: true,
-    // The loader hands the app a sanitized map; conflicting entries are gone.
     overrides: options.active ?? {},
     commonOverrides: options.common ?? {},
     platformOverrides: { darwin: options.darwin ?? {}, linux: {}, win32: {} },
@@ -21,9 +20,6 @@ function snapshotWith(options: {
 
 describe('buildKeybindingConflictWarnings', () => {
   it('reports a binding the loader dropped from the active map', () => {
-    // Why: this is the regression. terminal.splitRight loses Mod+Alt+ArrowRight
-    // to worktree.history.forward, the loader strips it, and judging the
-    // stripped map reported zero conflicts with no explanation.
     const warnings = buildKeybindingConflictWarnings(
       snapshotWith({ common: { 'terminal.splitRight': ['Mod+Alt+ArrowRight'] }, active: {} }),
       'darwin',
@@ -36,32 +32,31 @@ describe('buildKeybindingConflictWarnings', () => {
   })
 
   it('leaves the other claimant alone when only the custom binding is dropped', () => {
-    // Why: worktree.history.forward keeps its own default and never stopped
-    // working, so a warning on its row would blame an action the user did not
-    // touch — and calling it "ignored" would be false.
     const warnings = buildKeybindingConflictWarnings(
       snapshotWith({ common: { 'terminal.splitRight': ['Mod+Alt+ArrowRight'] } }),
       'darwin',
       []
     )
 
-    expect(warnings.has('worktree.history.forward')).toBe(false)
     expect([...warnings.keys()]).toEqual(['terminal.splitRight'])
   })
 
-  it('names only the other claimants, never the row itself', () => {
+  it('explains an override the loader dropped only after restoring a default onto its chord', () => {
     const warnings = buildKeybindingConflictWarnings(
-      snapshotWith({ common: { 'terminal.splitRight': ['Mod+Alt+ArrowRight'] } }),
+      snapshotWith({
+        common: {
+          'terminal.splitRight': ['Mod+Alt+ArrowRight'],
+          'terminal.splitDown': ['Mod+D']
+        },
+        active: {}
+      }),
       'darwin',
       []
     )
 
-    for (const [actionId, messages] of warnings) {
-      const ownTitle = actionId === 'terminal.splitRight' ? 'Split terminal right' : null
-      if (ownTitle) {
-        expect(messages.join(' ')).not.toContain(ownTitle)
-      }
-    }
+    expect(warnings.get('terminal.splitDown')).toEqual([
+      '⌘D was ignored — it conflicts with Split terminal right.'
+    ])
   })
 
   it('prefers the platform layer over the common layer', () => {
@@ -99,8 +94,6 @@ describe('buildKeybindingConflictWarnings', () => {
   })
 
   it('stays silent for an override the loader kept in the active map', () => {
-    // Why: "was ignored" is a claim about what the loader took away, so an
-    // override that survived into the active map must not be flagged.
     const warnings = buildKeybindingConflictWarnings(
       snapshotWith({
         common: { 'terminal.splitRight': ['Mod+Alt+ArrowRight'] },
