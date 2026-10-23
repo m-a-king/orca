@@ -1,3 +1,4 @@
+import { getKeybindingPlatform } from '../../../../shared/keybindings'
 import type {
   KeybindingActionId,
   KeybindingFileSnapshot,
@@ -34,4 +35,15 @@ export function hasCommonBindingOverride(
   actionId: KeybindingActionId
 ): boolean {
   return hasOwnBindingOverride(snapshot?.commonOverrides ?? {}, actionId)
+}
+
+// Match the common/platform layering used by readKeybindingFile.
+export function getFileBindingOverrides(
+  snapshot: KeybindingFileSnapshot | null,
+  platform: NodeJS.Platform
+): KeybindingOverrides {
+  return {
+    ...snapshot?.commonOverrides,
+    ...snapshot?.platformOverrides?.[getKeybindingPlatform(platform)]
+  }
 }

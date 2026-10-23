@@ -62,4 +62,28 @@ describe('shortcut groups', () => {
       expect.stringContaining('Go to File')
     ])
   })
+
+  it('reports a file override the loader dropped for conflicting', () => {
+    const catalog = buildShortcutDefinitionCatalog({
+      disabledTuiAgents: [],
+      pluginCommands: [],
+      keybindings: {},
+      keybindingSnapshot: {
+        path: '/tmp/keybindings.json',
+        platform: 'darwin',
+        exists: true,
+        overrides: {},
+        commonOverrides: { 'terminal.splitRight': ['Mod+Alt+ArrowRight'] },
+        platformOverrides: { darwin: {}, linux: {}, win32: {} },
+        diagnostics: []
+      },
+      platform: 'darwin',
+      missionControlConflictMessage: 'Blocked by Mission Control.'
+    })
+
+    expect(catalog.conflictByAction.get('terminal.splitRight')).toEqual([
+      '⌘⌥→ was ignored — it conflicts with Worktree History Forward.'
+    ])
+    expect(catalog.conflictByAction.has('worktree.history.forward')).toBe(false)
+  })
 })
