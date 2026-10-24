@@ -171,7 +171,10 @@ export function findKeybindingConflictsForDefinitions(
         groups.add(definition.scope)
       }
       // Why: main consumes these before renderer handlers run, but a focused browser guest runs its own chords ahead of the after-browser ones.
-      if (isKeybindingInterceptedByMainProcess(definition)) {
+      if (
+        options.includeMainProcessInterception &&
+        isKeybindingInterceptedByMainProcess(definition)
+      ) {
         for (const scope of scopes) {
           if (scope !== 'browser' || isKeybindingInterceptedBeforeBrowserChords(definition)) {
             groups.add(scope)
@@ -201,7 +204,10 @@ export function findKeybindingConflictsForDefinitions(
       ({ actionIds }) =>
         actionIds.size > 1 &&
         // Why: the two digit ranges may share a modifier on purpose (see tab.selectByIndex's definition).
-        !Array.from(actionIds).every(isDigitIndexActionId) &&
+        !(
+          options.includeMainProcessInterception &&
+          Array.from(actionIds).every(isDigitIndexActionId)
+        ) &&
         setIntersects(actionIds, customizedActions)
     )
     .map(({ binding, actionIds }) => ({

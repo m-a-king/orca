@@ -74,7 +74,10 @@ describe('browser guest precedence for main-process shortcuts', () => {
         const shared = { [browser.id]: [CHORD], [intercepted.id]: [CHORD] }
         const browserWins =
           JSON.stringify(rendererMessagesForGuestChord(shared)) === JSON.stringify(alone)
-        const reported = findKeybindingConflicts(process.platform, shared).length > 0
+        const reported =
+          findKeybindingConflicts(process.platform, shared, {
+            includeMainProcessInterception: true
+          }).length > 0
         if (reported === browserWins) {
           mismatches.push(`${browser.id} vs ${intercepted.id}`)
         }

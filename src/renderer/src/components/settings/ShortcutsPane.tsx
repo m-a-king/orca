@@ -106,7 +106,6 @@ export function ShortcutsPane(): React.JSX.Element {
           disabledTuiAgents,
           pluginCommands,
           keybindings,
-          keybindingSnapshot,
           platform,
           macCapturedDigitChords,
           missionControlConflictMessage
@@ -114,7 +113,6 @@ export function ShortcutsPane(): React.JSX.Element {
       [
         disabledTuiAgents,
         keybindings,
-        keybindingSnapshot,
         macCapturedDigitChords,
         missionControlConflictMessage,
         pluginCommands

@@ -282,7 +282,8 @@ describe('digit-index shortcuts', () => {
   })
 
   it('lets the two ranges swap modifiers without a false conflict', () => {
-    // The headline use case: tab → Cmd, workspace → Ctrl.
+    // The headline use case: tab → Cmd, workspace → Ctrl. They live in
+    // different scopes, so neither edit is blocked as a conflict.
     expect(
       findKeybindingConflicts('darwin', {
         'tab.selectByIndex': ['Mod+1'],
